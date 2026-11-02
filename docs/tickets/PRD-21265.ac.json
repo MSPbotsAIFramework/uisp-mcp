@@ -1,0 +1,142 @@
+[
+  {
+    "id": "TC-UISP-101",
+    "ac": "AC1",
+    "type": "auto",
+    "text": "Given a UISP instance with 3 sites (2 site, 1 endpoint), when uisp_list_sites is called with no filter, then all 3 are returned; when called with site_type=\"endpoint\", then only the 1 endpoint site is returned",
+    "tests": ["tests/test_tools.py::test_list_sites_returns_all_and_filters_by_type"]
+  },
+  {
+    "id": "TC-UISP-102",
+    "ac": "AC2",
+    "type": "auto",
+    "text": "Given a known site_id, when uisp_get_site is called, then it returns that site's name, type, status, and suspended flag",
+    "tests": ["tests/test_tools.py::test_get_site_returns_detail_fields"]
+  },
+  {
+    "id": "TC-UISP-103",
+    "ac": "AC2",
+    "type": "auto",
+    "text": "Given a site_id the upstream API does not recognize, when uisp_get_site is called, then it returns a structured not_found error, not an unhandled exception",
+    "tests": ["tests/test_tools.py::test_get_site_unknown_id_returns_structured_not_found"]
+  },
+  {
+    "id": "TC-UISP-104",
+    "ac": "AC3",
+    "type": "auto",
+    "text": "Given a site_id with 2 devices and another site with 1 device, when uisp_list_devices is called with that site_id, then exactly the 2 devices for that site are returned",
+    "tests": ["tests/test_tools.py::test_list_devices_filters_by_site_id"]
+  },
+  {
+    "id": "TC-UISP-105",
+    "ac": "AC3",
+    "type": "auto",
+    "text": "Given devices across two sites, when uisp_list_devices is called with no site_id, then devices from both sites are returned",
+    "tests": ["tests/test_tools.py::test_list_devices_without_site_id_returns_all_sites"]
+  },
+  {
+    "id": "TC-UISP-106",
+    "ac": "AC3",
+    "type": "auto",
+    "text": "Given devices of mixed role (ap, router), when uisp_list_devices is called with role=\"router\", then only router devices are returned",
+    "tests": ["tests/test_tools.py::test_list_devices_filters_by_role"]
+  },
+  {
+    "id": "TC-UISP-107",
+    "ac": "AC4",
+    "type": "auto",
+    "text": "Given a known device_id, when uisp_get_device is called, then it returns identification fields plus overview fields (status, uptime, cpu, outageScore)",
+    "tests": ["tests/test_tools.py::test_get_device_returns_identification_and_overview"]
+  },
+  {
+    "id": "TC-UISP-108",
+    "ac": "AC4",
+    "type": "auto",
+    "text": "Given a device_id the upstream API does not recognize, when uisp_get_device is called, then it returns a structured not_found error",
+    "tests": ["tests/test_tools.py::test_get_device_unknown_id_returns_structured_not_found"]
+  },
+  {
+    "id": "TC-UISP-109",
+    "ac": "AC5",
+    "type": "auto",
+    "text": "Given outages of type outage and unreachable, one ongoing=true and one ongoing=false, when uisp_list_outages is called with in_progress=true, then only the ongoing one is returned",
+    "tests": ["tests/test_tools.py::test_list_outages_filters_in_progress"]
+  },
+  {
+    "id": "TC-UISP-110",
+    "ac": "AC5",
+    "type": "auto",
+    "text": "Given outages for two different devices, when uisp_list_outages is called with a device_id filter, then only that device's outages are returned",
+    "tests": ["tests/test_tools.py::test_list_outages_filters_by_device_id"]
+  },
+  {
+    "id": "TC-UISP-111",
+    "ac": "AC6",
+    "type": "auto",
+    "text": "Given log entries of mixed level (info, warning, error), when uisp_list_logs is called with level=\"error\", then only error-level entries are returned",
+    "tests": ["tests/test_tools.py::test_list_logs_filters_by_level"]
+  },
+  {
+    "id": "TC-UISP-112",
+    "ac": "AC6",
+    "type": "auto",
+    "text": "Given log entries across two sites, when uisp_list_logs is called with a site_id filter, then only that site's entries are returned",
+    "tests": ["tests/test_tools.py::test_list_logs_filters_by_site_id"]
+  },
+  {
+    "id": "TC-UISP-113",
+    "ac": "AC7",
+    "type": "auto",
+    "text": "Given 250 outages exist upstream (upstream page size 100) and max_items defaults to 200, when uisp_list_outages is called, then scanned equals 200, truncated is true, and the tool does not error or hang",
+    "tests": ["tests/test_tools.py::test_list_outages_stops_at_max_items_and_reports_truncated"]
+  },
+  {
+    "id": "TC-UISP-114",
+    "ac": "AC7",
+    "type": "auto",
+    "text": "Given 150 log entries exist upstream and max_items defaults to 200, when uisp_list_logs is called, then all 150 are returned, scanned equals 150, and truncated is false",
+    "tests": ["tests/test_tools.py::test_list_logs_scans_past_first_page_without_truncating"]
+  },
+  {
+    "id": "TC-UISP-115",
+    "ac": "AC8",
+    "type": "auto",
+    "text": "Given a request to any tool with X-Uisp-Api-Key or X-Uisp-Base-Url missing, when the tool is called, then it returns the not_configured error envelope, not a raw exception",
+    "tests": ["tests/test_tools.py::test_tools_return_not_configured_when_credentials_missing"]
+  },
+  {
+    "id": "TC-UISP-116",
+    "ac": "AC9",
+    "type": "auto",
+    "text": "Given the upstream UISP instance returns 401 for a bad token, when any tool is called, then it returns the unauthorized structured error, not a stack trace",
+    "tests": ["tests/test_tools.py::test_tools_map_upstream_401_to_unauthorized"]
+  },
+  {
+    "id": "TC-UISP-117",
+    "ac": "AC9",
+    "type": "auto",
+    "text": "Given the upstream UISP instance is unreachable (connection/timeout error), when any tool is called, then it returns the upstream_error structured error",
+    "tests": ["tests/test_tools.py::test_tools_map_connection_failure_to_upstream_error"]
+  },
+  {
+    "id": "TC-UISP-118",
+    "ac": "AC10",
+    "type": "auto",
+    "text": "Given a site_id with zero devices, when uisp_list_devices is called, then it returns an empty devices list with a normal success response, not an error",
+    "tests": ["tests/test_tools.py::test_list_devices_empty_site_returns_empty_list_not_error"]
+  },
+  {
+    "id": "TC-UISP-119",
+    "ac": "AC11",
+    "type": "auto",
+    "text": "Given two concurrent calls using two different X-Uisp-Api-Key/X-Uisp-Base-Url pairs pointing at two different UISP instances, when both run concurrently against uisp_list_sites, then each caller's result only contains its own instance's sites, verified at the header/credential level",
+    "tests": ["tests/test_middleware.py::test_concurrent_requests_cannot_see_each_others_instance_sites"]
+  },
+  {
+    "id": "TC-UISP-120",
+    "ac": "AC12",
+    "type": "auto",
+    "text": "Given the server's tools/list response, when inspected, then all 6 tools have readOnlyHint true and no tool name implies a write/delete/restart/config action",
+    "tests": ["tests/test_tools.py::test_tools_list_snapshot_all_read_only"]
+  }
+]
