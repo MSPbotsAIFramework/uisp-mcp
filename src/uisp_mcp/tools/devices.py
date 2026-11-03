@@ -59,6 +59,8 @@ def register(mcp: FastMCP, client_factory: Callable[[], UispClient | None]) -> N
             return dump_json_capped({"devices": projected, "count": len(projected)})
         except UispError as e:
             return e.to_envelope()
+        finally:
+            await client.aclose()
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def uisp_get_device(
@@ -74,3 +76,5 @@ def register(mcp: FastMCP, client_factory: Callable[[], UispClient | None]) -> N
             return dump_json_capped(project_device_detail(result))
         except UispError as e:
             return e.to_envelope()
+        finally:
+            await client.aclose()

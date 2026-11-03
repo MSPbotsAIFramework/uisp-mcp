@@ -9,12 +9,14 @@ test_middleware.py.
 
 import json
 
+import httpx
 import pytest
 from mcp.server.fastmcp import FastMCP
 
 from uisp_mcp.api_client import UispClient, UispError
 from uisp_mcp.config import Settings
 from uisp_mcp.server import create_mcp_server
+from uisp_mcp.tools._common import paginate_all
 
 # name -> (required params, expected annotation hint set to True)
 EXPECTED_TOOLS = {
@@ -106,6 +108,7 @@ class _StubClient:
         self._paged = paged or {}
         self._error = error
         self.calls: list[tuple[str, dict]] = []
+        self.closed = False
 
     async def get(self, path, params=None):
         params = params or {}
@@ -119,6 +122,12 @@ class _StubClient:
             start = page * count
             return items[start : start + count]
         return self._responses[path]
+
+    async def aclose(self):
+        # Every tools/*.py module calls this in a ``finally`` block
+        # (review round 1 must-fix #1); the stub tracks it so tests can
+        # assert the real contract is honored even without a real client.
+        self.closed = True
 
 
 async def _call(mcp: FastMCP, name: str, args: dict) -> str:
@@ -444,3 +453,78 @@ def test_client_base_url_and_auth_header_shape():
     client = UispClient("https://uisp.example.com", "test-token")
     assert client._base_url == "https://uisp.example.com"
     assert client._api_key == "test-token"
+
+
+# --- review round 1 must-fix regressions -----------------------------------
+# docs/tickets/PRD-21265-review.md Round 1
+
+
+@pytest.mark.asyncio
+async def test_every_tool_closes_its_client():
+    """TC-UISP-121 (source: dev). Review round 1 must-fix #1 is "reuse one
+    HTTP client within a request, don't open one per endpoint call"; the
+    other half of that contract is that whatever client was opened for the
+    call must get closed afterwards. Every tools/*.py module now does this
+    in a ``finally`` around client_factory()."""
+    for module_name, tool_name, args in _ALL_TOOLS:
+        client = _StubClient(
+            responses={
+                "/sites": [],
+                "/sites/s1": _site("s1", "site", "active", False),
+                "/devices": [],
+                "/devices/d1": _device("d1", "s1"),
+            },
+            paged={"/outages": [], "/logs": []},
+        )
+        mcp = _mcp_with(module_name, client)
+        await _call(mcp, tool_name, args)
+        assert client.closed, f"{tool_name} did not close its UispClient"
+
+
+@pytest.mark.asyncio
+async def test_real_client_reuses_one_http_connection_across_calls(monkeypatch):
+    """TC-UISP-122 (source: dev). Review round 1 must-fix #1, exercised
+    against the real UispClient (not the stub): paginate_all makes 2+
+    upstream calls for one tool invocation, and must not open a new
+    httpx.AsyncClient per page."""
+    created: list[object] = []
+    orig_init = httpx.AsyncClient.__init__
+
+    def counting_init(self, *args, **kwargs):
+        created.append(self)
+        orig_init(self, *args, **kwargs)
+
+    async def fake_request(self, method, url, headers=None, params=None):
+        page = (params or {}).get("page", 0)
+        items = [{"id": f"o{page}"}] if page == 0 else []
+        return httpx.Response(200, json=items, request=httpx.Request(method, url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", counting_init)
+    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
+
+    client = UispClient("https://uisp.example.com", "test-token")
+    try:
+        scanned, truncated = await paginate_all(client, "/outages", max_items=200)
+    finally:
+        await client.aclose()
+
+    assert len(scanned) == 1
+    assert truncated is False
+    assert len(created) == 1, (
+        f"expected exactly one httpx.AsyncClient for a 2-page paginate_all call, got {len(created)}"
+    )
+
+
+def test_retry_backoff_worst_case_stays_under_sop_120s_cap():
+    """TC-UISP-123 (source: dev). Review round 1 must-fix #2: a single tool
+    call's total upstream time, including every retry and the worst-case
+    Retry-After-driven backoff, must provably stay under the SOP's 120s
+    hard cap (vendor-mcp-development-sop.md Sec 5 / §14 checklist)."""
+    from uisp_mcp.api_client import _MAX_BACKOFF_SECONDS, _MAX_RETRIES, _TIMEOUT
+
+    n_attempts = _MAX_RETRIES + 1
+    per_attempt_worst_case = _TIMEOUT.connect + _TIMEOUT.read
+    worst_case_total = n_attempts * per_attempt_worst_case + (n_attempts - 1) * _MAX_BACKOFF_SECONDS
+    assert worst_case_total < 120.0, (
+        f"worst-case call duration {worst_case_total}s exceeds the SOP's 120s cap"
+    )

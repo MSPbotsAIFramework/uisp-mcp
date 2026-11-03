@@ -56,6 +56,8 @@ def register(mcp: FastMCP, client_factory: Callable[[], UispClient | None]) -> N
             return dump_json_capped({"sites": projected, "count": len(projected)})
         except UispError as e:
             return e.to_envelope()
+        finally:
+            await client.aclose()
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
     async def uisp_get_site(
@@ -70,3 +72,5 @@ def register(mcp: FastMCP, client_factory: Callable[[], UispClient | None]) -> N
             return dump_json_capped(project_site_detail(result))
         except UispError as e:
             return e.to_envelope()
+        finally:
+            await client.aclose()

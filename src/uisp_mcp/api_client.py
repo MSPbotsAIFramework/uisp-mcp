@@ -28,10 +28,18 @@ import httpx
 
 from ._json import error_envelope
 
-_TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=10.0, pool=5.0)
+# Worst-case total call duration (incl. retries) must provably stay under
+# the SOP's 120s hard cap (vendor-mcp-development-sop.md Sec 5 + the
+# non-optional §14 checklist line): with n_attempts = _MAX_RETRIES + 1 and
+# every retry's Retry-After header hitting the _MAX_BACKOFF_SECONDS cap,
+# worst case = n_attempts * (connect + read) + (n_attempts - 1) * backoff
+#            = 3 * (5.0 + 20.0) + 2 * 5.0 = 85.0s, well under 120s.
+# (Review round 1 flagged the previous 3*35 + up-to-4*20 ≈ 147s worst case
+# as exceeding the cap — see docs/tickets/PRD-21265-review.md Round 1.)
+_TIMEOUT = httpx.Timeout(connect=5.0, read=20.0, write=10.0, pool=5.0)
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
-_MAX_RETRIES = 3
-_MAX_BACKOFF_SECONDS = 20.0
+_MAX_RETRIES = 2
+_MAX_BACKOFF_SECONDS = 5.0
 
 _API_PREFIX = "/nms/api/v2.1"
 
@@ -72,11 +80,20 @@ class UispClient:
     from that request's own ``X-Uisp-Base-Url`` / ``X-Uisp-Api-Key``
     headers.
 
-    A new ``httpx.AsyncClient`` is created per call (not shared globally)
-    because, unlike every other connector in this org, two concurrent
-    requests here can legitimately target two entirely different hosts —
-    there is nothing safe to pool across requests. TLS certificate
-    verification is left ON (httpx's default); see
+    A ``UispClient`` instance (not shared globally) is still constructed
+    fresh per request, because, unlike every other connector in this org,
+    two concurrent requests here can legitimately target two entirely
+    different hosts — there is nothing safe to pool *across* requests. But
+    *within* one request/tool call, the underlying ``httpx.AsyncClient`` is
+    created lazily on first use and reused for every subsequent ``get()``
+    call made through this same instance (e.g. each page fetched by
+    ``tools/_common.py``'s ``paginate_all``), instead of opening a new
+    TCP+TLS connection per upstream call (review round 1 must-fix #1, see
+    ``docs/tickets/PRD-21265-review.md``). Callers must call ``aclose()``
+    once they are done with this instance — every ``tools/*.py`` module
+    does this in a ``finally`` block around its ``client_factory()`` call.
+
+    TLS certificate verification is left ON (httpx's default); see
     ``docs/tickets/PRD-21265.md`` → Decisions made by DEV01 for why this is
     not relaxed for self-signed, self-hosted deployments.
     """
@@ -84,6 +101,18 @@ class UispClient:
     def __init__(self, base_url: str, api_key: str):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self._client: httpx.AsyncClient | None = None
+
+    async def aclose(self) -> None:
+        """Release the HTTP connection(s) opened by this instance, if any.
+
+        Safe to call even when no request was ever issued (the client is
+        created lazily). One call per ``UispClient`` instance, made by the
+        tool function once it is done issuing requests.
+        """
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     def _clean_params(self, params: dict | None) -> dict:
         if not params:
@@ -98,25 +127,28 @@ class UispClient:
         params = self._clean_params(params)
         headers = {"x-auth-token": self._api_key, "Accept": "application/json"}
 
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=_TIMEOUT)
+        client = self._client
+
         last_exc: Exception | None = None
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            for attempt in range(_MAX_RETRIES + 1):
-                try:
-                    resp = await client.request(method, url, headers=headers, params=params)
-                except httpx.RequestError as e:
-                    last_exc = e
-                    if attempt < _MAX_RETRIES:
-                        await asyncio.sleep(min(2**attempt, _MAX_BACKOFF_SECONDS))
-                        continue
-                    raise UispError(0, f"{e or type(e).__name__} (url={url})") from e
-
-                if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
-                    delay = self._retry_delay(resp, attempt)
-                    await asyncio.sleep(delay)
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                resp = await client.request(method, url, headers=headers, params=params)
+            except httpx.RequestError as e:
+                last_exc = e
+                if attempt < _MAX_RETRIES:
+                    await asyncio.sleep(min(2**attempt, _MAX_BACKOFF_SECONDS))
                     continue
+                raise UispError(0, f"{e or type(e).__name__} (url={url})") from e
 
-                self._raise_for_status(resp)
-                return self._parse_body(resp)
+            if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+                delay = self._retry_delay(resp, attempt)
+                await asyncio.sleep(delay)
+                continue
+
+            self._raise_for_status(resp)
+            return self._parse_body(resp)
 
         # Unreachable in practice (loop always returns or raises above), but
         # keeps type checkers happy and guards against future edits.

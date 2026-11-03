@@ -61,3 +61,5 @@ def register(mcp: FastMCP, client_factory: Callable[[], UispClient | None]) -> N
             )
         except UispError as e:
             return e.to_envelope()
+        finally:
+            await client.aclose()
