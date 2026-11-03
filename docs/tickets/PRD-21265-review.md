@@ -1,5 +1,28 @@
 # PRD-21265 · Code review
 
+## Round 2 · 2026-11-03 · reviewed cbc3eee (base 818862a)
+
+Verdict: approved
+Status: frozen @ cbc3eee
+
+### Findings
+
+No must-fix. Both Round 1 must-fix items verified fixed on `fa22757`/`cbc3eee`, independently re-checked in this round (not just trusting the Self-test section):
+
+1. **Must-fix #1 (connection reuse), confirmed fixed** — `src/uisp_mcp/api_client.py:101-132`: `UispClient` now lazily creates its `httpx.AsyncClient` on first use and caches it on `self._client` (`__init__` at :101-104 sets it to `None`; `_request` at :130-132 creates it only if still `None`), reusing it across every `get()` call made through that instance. `tools/_common.py`'s `paginate_all` (unchanged) is called with one `UispClient` instance per tool invocation, so its multi-page loop now shares one connection. All six tool functions (`sites.py`, `devices.py`, `outages.py`, `logs.py`) call `await client.aclose()` in a `finally` block — read each of the four files directly, confirmed the pattern is applied uniformly (devices.py/logs.py diffs just add the missing `finally: await client.aclose()`; sites.py/outages.py already had it from the first implementation). `server.py:31-35`'s `get_client_from_context` still constructs a fresh `UispClient` per tool call from the per-request `contextvar`, so the new caching is scoped to one call's lifetime only — no cross-request/tenant connection sharing was introduced by this fix.
+   - Regression tests read and judged sound: `TC-UISP-121`/`test_every_tool_closes_its_client` drives every registered tool through `_StubClient` and asserts `.closed`. `TC-UISP-122`/`test_real_client_reuses_one_http_connection_across_calls` is the stronger test — it exercises the **real** `UispClient` (not the stub) by monkeypatching `httpx.AsyncClient.__init__` to count instantiations, then drives a real 2-page `paginate_all` call and asserts exactly one `httpx.AsyncClient` was created. This directly exercises the code path Round 1 found broken (the stub in `test_tools.py` replaces `UispClient.get` at the method boundary, so it could not have caught or re-caught this regression).
+2. **Must-fix #2 (120s cap), confirmed fixed** — `src/uisp_mcp/api_client.py:31-42`: `_TIMEOUT.read` tightened 30.0s → 20.0s, `_MAX_RETRIES` tightened 3 → 2. Recomputed the worst case independently rather than trusting the comment: 3 attempts (`_MAX_RETRIES + 1`) × (connect 5.0s + read 20.0s) + 2 backoffs × 5.0s max (`_MAX_BACKOFF_SECONDS`, applies to both the `httpx.RequestError` retry path at :138-143 and the retryable-status path via `_retry_delay` at :159-166) = 75.0 + 10.0 = 85.0s, under the SOP's 120s cap with margin. `TC-UISP-123`/`test_retry_backoff_worst_case_stays_under_sop_120s_cap` computes this same formula from the live constants rather than hardcoding 85.0s, so a future constant change that reopens the gap fails CI instead of needing a human to redo the arithmetic — good regression design.
+
+### Independent re-verification this round
+
+- Re-ran the gate on `cbc3eee` myself (python3.12 venv substituting for `uv`, this machine has no `uv` — same substitution the Self-test section used): `pip install -e . pytest pytest-asyncio` then `pytest -q` → `31 passed, 1 warning` — matches the Self-test section's declared count exactly (28 Round-1 cases + `TC-UISP-121/122/123`).
+- Re-ran the Chinese-text scan independently (`grep -rnP '[\x{4e00}-\x{9fff}]'` across the tree): the only hits are in `docs/tickets/PRD-21265-review.md`'s own Round 1 findings text, which quote the SOP in Chinese as citation — pre-existing from Round 1, not introduced by this round's diff, and consistent with the PRD-21262 precedent of not flagging a review doc's own SOP citations. No Chinese in any `src/`, `tests/`, or `README.md` path.
+- `gitleaks` binary is unavailable on this review machine too (dev03); ran the same manual credential-literal grep (`api_key=`, `password=`, `secret=`, PEM/AWS markers) across the full tree, clean.
+- `git diff --stat 61f488e..HEAD` confirms `Dockerfile`/`docker-compose.yml`/`uv.lock`/`README.md` are untouched by this round's diff, so Round 1's container-checklist and README-connector-section findings stand without re-verification.
+- Scope check: diff since Round 1 (`61f488e..HEAD`) touches only `api_client.py`, the four `tools/*.py` finally-blocks, `tests/test_tools.py`, and the two docs files (`-review.md`, `.ac.json`) — no change outside what Round 1 asked for.
+
+Nothing further to flag. No new must-fix, no open suggestions beyond Round 1's one non-blocking note (`_common.py` truncation over-reporting edge case), which this round's diff does not touch.
+
 ## Round 1 · 2026-11-03 · reviewed c17dee0 (base 818862a)
 
 Verdict: changes requested
